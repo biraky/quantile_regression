@@ -1,0 +1,110 @@
+library(Matrix)
+library(MASS)
+library(gWQS)
+
+generate_simulated_dataset <- function(n_samples = 5,
+                                       correlation_min = 0.4,
+                                       correlation_max = 0.7,
+                                       n_total = 25,
+                                       n_correlated = 10)
+{
+  n_independent <- n_total - n_correlated
+
+  # Build correlation matrix for correlated mixtures
+  corr_vals <- runif(n_correlated * (n_correlated - 1) / 2,
+                     correlation_min, correlation_max)
+  sigma_corr <- diag(1, n_correlated)
+  sigma_corr[upper.tri(sigma_corr)] <- corr_vals
+  sigma_corr[lower.tri(sigma_corr)] <- t(sigma_corr)[lower.tri(sigma_corr)]
+
+  # Ensure the matrix is positive definite
+  sigma_corr <- as.matrix(nearPD(sigma_corr)$mat)
+
+  # Generate the mixture components
+  correlated_mix <- mvrnorm(n_samples, mu = rep(0, n_correlated), Sigma = sigma_corr)
+  independent_mix <- matrix(rnorm(n_samples * n_independent, 0, 1), ncol = n_independent)
+
+  mixtures <- cbind(correlated_mix, independent_mix)
+  colnames(mixtures) <- c(
+    paste0("feature_",   seq_len(n_correlated)),
+    paste0("biomarker_", seq.int(n_correlated + 1, n_total))
+  )
+  betas = rep(1, 25)
+
+  dependent_variable <- as.matrix(mixtures) %*% betas + rnorm(n_samples)
+
+
+  mixtures <- as.data.frame(mixtures)
+  mixtures$dependent_variable <- dependent_variable
+  mixtures
+}
+
+dataset <- generate_simulated_dataset(n_samples = 1000)
+
+feature_names <- names(dataset)[1:10]
+
+# summary(lm(dependent_variable ~ . , data = dataset))
+
+form <- paste0("dependent_variable ~ wqs + ", paste0("biomarker_", 11:25, collapse = "+"))
+
+fit_gwqs <- gwqs(as.formula(form),
+                  mix_name = feature_names, data = dataset,
+                  q = 4, validation = 0.6, b = 400, rh = 150,
+                  family = "gaussian", seed = 2016)
+
+summary(fit_gwqs)
+
+
+gwqs_barplot(fit_gwqs)
+
+names(dataset)
+
+dataset <- generate_simulated_dataset(n_samples = 1000,
+                                      correlation_min = 0.8,
+                                      correlation_max = 0.95)
+
+feature_names <- names(dataset)[1:25]
+
+fit_gwqs <- gwqs(dependent_variable ~ pwqs + nwqs, mix_name =  feature_names, data = dataset,
+                 q = 4, validation = 0.6, b = 50, rh = 20,
+                 family = "gaussian", seed = 2016)
+summary(fit_gwqs)
+
+cor(dataset$feature_5, dataset$feature_6)
+cor(dataset$feature_4, dataset$feature_3)
+
+features <- dataset[paste0("feature_", 1:25)]
+cor_matrix <- cor(features, use = "pairwise.complete.obs")
+View(cor_matrix)
+gwqs_barplot(fit_gwqs)
+
+
+### =======================================================
+library(glmnet)
+
+# Build design matrix (all predictors except dependent_variable)
+X <- model.matrix(dependent_variable ~ ., data = dataset)[, -1]  # drop intercept
+y <- dataset$dependent_variable
+
+# Fit Lasso path (alpha = 1 = Lasso)
+fit_lasso <- glmnet(X, y, alpha = 1, standardize = TRUE)
+
+# Cross-validation to choose lambda
+set.seed(123)
+cvfit <- cv.glmnet(X, y, alpha = 1, standardize = TRUE)
+
+# Best lambda
+best_lambda <- cvfit$lambda.min
+
+# Coefficients at best lambda
+lasso_coefs <- coef(cvfit, s = "lambda.min")
+
+print(best_lambda)
+print(lasso_coefs)
+
+fit_lasso_best_lambda <- glmnet(X, y, alpha = 1, lambda = best_lambda,
+                                standardize = TRUE)
+set.seed(123)
+cvfit <- cv.glmnet(X, y, alpha = 1, lambda = best_lambda)
+
+lasso_coefs <- coef(cvfit, s = "lambda.min")
