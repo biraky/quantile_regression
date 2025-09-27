@@ -2,11 +2,20 @@ library(Matrix)
 library(MASS)
 library(gWQS)
 
-generate_simulated_dataset <- function(n_samples = 5,
-                                       correlation_min = 0.4,
-                                       correlation_max = 0.7,
-                                       n_total = 25,
-                                       n_correlated = 10)
+library(corrplot)
+library(ggplot2)
+library(dplyr)
+
+generate_simulated_dataset <- \(
+  n_samples = 5,
+  correlation_min = 0.4,
+  correlation_max = 0.7,
+  n_total = 25,
+  n_correlated = 10,
+  weights_feature = rep(1, n_correlated),
+  betas_features =  rep(1, n_correlated),
+  betas_biomarkers = rep(1, n_total - n_correlated)
+)
 {
   n_independent <- n_total - n_correlated
 
@@ -29,27 +38,43 @@ generate_simulated_dataset <- function(n_samples = 5,
     paste0("feature_",   seq_len(n_correlated)),
     paste0("biomarker_", seq.int(n_correlated + 1, n_total))
   )
-  betas = rep(1, 25)
 
-  dependent_variable <- as.matrix(mixtures) %*% betas + rnorm(n_samples)
+  betas <- c(betas_features, betas_biomarkers)
 
+  weights <- c(weights_feature, rep(1, n_independent))
+
+  dependent_variable <- as.matrix(mixtures) %*% (betas * weights) + rnorm(n_samples)
 
   mixtures <- as.data.frame(mixtures)
   mixtures$dependent_variable <- dependent_variable
+  attr(mixtures, "true_weights") <- weights
   mixtures
 }
 
-dataset <- generate_simulated_dataset(n_samples = 1000)
+weights <- c(5:1, rep(0, 5))
+weights <- weights/sum(weights)
 
+dataset <- generate_simulated_dataset(n_samples = 25,
+                                      weights_feature = weights)
+names(dataset)
 feature_names <- names(dataset)[1:10]
 
-# summary(lm(dependent_variable ~ . , data = dataset))
+
+
+dataset |> select(starts_with("feature_")) |> cor(use = "pairwise.complete.obs") |>
+  corrplot(
+    method = "number",
+    type = "upper",
+    tl.col = "black"
+  )
+
+summary(lm(dependent_variable ~ . , data = dataset))
 
 form <- paste0("dependent_variable ~ wqs + ", paste0("biomarker_", 11:25, collapse = "+"))
 
 fit_gwqs <- gwqs(as.formula(form),
-                  mix_name = feature_names, data = dataset,
-                  q = 4, validation = 0.6, b = 400, rh = 150,
+                  mix_name = feature_names, data = as.data.frame(dataset),
+                  q = 4, validation = 0.6, b = 50, rh = 10,
                   family = "gaussian", seed = 2016)
 
 summary(fit_gwqs)
